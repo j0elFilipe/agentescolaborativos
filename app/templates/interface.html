@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOSSOS AGENTES</title>
+    <style>
+        table { border-collapse: collapse; width: 50%; }
+        td { border: 1px solid black; width: 30px; height: 30px; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>Ambiente</h1>
+    <table id="matriz"></table>
+    <script>
+        async function update_ambiente(){
+            const response = await fetch('actualizar');
+            const data = await response.json();
+            const ambiente = data.ambiente;
+            const tabela = document.getElementById('matriz');
+            tabela.innerHTML = '';
+            ambiente.forEach(row => {
+                const tr = document.createElement('tr');
+                row.forEach(cell => {
+                    const td = document.createElement('td');
+                    td.textContent = cell;
+                    tr.appendChild(td);
+                });
+                tabela.appendChild(tr);
+            });
+        }
+        setInterval(actualizarAmbiente, 1000)
+    </script>
+</body>
+</html>

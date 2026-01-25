@@ -9,7 +9,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 
 class Agente:
-    def __init__(self, id, x, y, modelo_tipo):
+    def __init__(self, id, x, y, modelo_tipo, modelo_ml=None):
         self.id = id
         self.x = x
         self.y = y
@@ -18,6 +18,7 @@ class Agente:
         self.vivo = True
         self.conhecimento = set()
         self.modelo_tipo = modelo_tipo
+        self.modelo_ml = modelo_ml  # Modelo ML real treinado
         self.cor = self._gerar_cor(id)
         self.canvas_id = None  # ID do círculo no canvas
         self.rastro = []  # Histórico de posições
@@ -53,7 +54,7 @@ class ModeloML:
         if tipo == 'knn':
             self.modelo = KNeighborsClassifier(n_neighbors=3)
         elif tipo == 'tree':
-            self.modelo = DecisionTreeClassifier(max_depth=5)
+            self.modelo = DecisionTreeClassifier(max_depth=5, random_state=42)
         elif tipo == 'bayes':
             self.modelo = GaussianNB()
         self.treinar_modelo_base()
@@ -61,21 +62,58 @@ class ModeloML:
     def treinar_modelo_base(self):
         X = []
         y = []
-        for _ in range(1000):
+        # Gerar dados de treino mais realistas
+        for _ in range(2000):
             x, y_coord = np.random.randint(0, 10, 2)
             distancia_centro = np.sqrt((x-5)**2 + (y_coord-5)**2)
+            distancia_borda = min(x, y_coord, 9-x, 9-y_coord)
+            
+            # Lógica: bombas no centro, tesouros nas bordas
+            rand = np.random.random()
             if distancia_centro < 3:
-                label = 'B'
-            elif distancia_centro > 6:
-                label = 'T'
+                label = 'B' if rand < 0.5 else ('L' if rand < 0.8 else 'T')
+            elif distancia_borda <= 1:
+                label = 'T' if rand < 0.4 else ('L' if rand < 0.7 else 'B')
             else:
-                label = 'L'
-            X.append([x, y_coord, distancia_centro])
+                label = 'L' if rand < 0.6 else ('B' if rand < 0.8 else 'T')
+            
+            X.append([x, y_coord, distancia_centro, distancia_borda])
             y.append(label)
+        
         self.modelo.fit(X, y)
     
-    def prever(self, x, y, distancia_centro):
-        return self.modelo.predict([[x, y, distancia_centro]])[0]
+    def escolher_melhor_celula(self, celulas_possiveis):
+        """Escolhe a melhor célula usando o modelo ML"""
+        if not celulas_possiveis:
+            return None
+        
+        melhor_celula = None
+        melhor_score = -1000
+        
+        for cx, cy in celulas_possiveis:
+            dist_centro = np.sqrt((cx-5)**2 + (cy-5)**2)
+            dist_borda = min(cx, cy, 9-cx, 9-cy)
+            
+            # Prever tipo de célula
+            predicao = self.modelo.predict([[cx, cy, dist_centro, dist_borda]])[0]
+            
+            # Sistema de pontuação
+            score = 0
+            if predicao == 'T':  # Tesouro é o melhor
+                score = 100
+            elif predicao == 'L':  # Livre é neutro
+                score = 50
+            elif predicao == 'B':  # Bomba é ruim
+                score = -50
+            
+            # Adicionar aleatoriedade para exploração
+            score += np.random.randint(-10, 10)
+            
+            if score > melhor_score:
+                melhor_score = score
+                melhor_celula = (cx, cy)
+        
+        return melhor_celula if melhor_celula else celulas_possiveis[0]
 
 class SistemaAgentesColaborativos:
     def __init__(self, root):
@@ -96,7 +134,7 @@ class SistemaAgentesColaborativos:
         self.velocidade = 500  # Milissegundos entre movimentos
         self.mostrar_rastros = True  # Mostrar trilhas dos agentes
         
-        self.tamanho_celula = 60
+        self.tamanho_celula = 45  # Reduzido de 50 para 45
         self.criar_interface()
     
     def criar_interface(self):
@@ -220,16 +258,41 @@ class SistemaAgentesColaborativos:
             label.pack(side=tk.RIGHT)
             self.metric_labels[key] = label
         
+        # Frame para estatísticas dos modelos ML
+        stats_ml_frame = tk.LabelFrame(top_frame, text="Performance dos Modelos ML",
+                                       font=('Arial', 10, 'bold'), bg='white', padx=10, pady=10)
+        stats_ml_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        self.stats_ml_labels = {}
+        for modelo in ['knn', 'tree', 'bayes']:
+            frame = tk.Frame(stats_ml_frame, bg='#ecf0f1', padx=8, pady=6, relief=tk.RIDGE, borderwidth=2)
+            frame.pack(fill=tk.X, pady=3)
+            
+            nome_label = tk.Label(frame, text=f"{modelo.upper()}:", font=('Arial', 9, 'bold'),
+                                 bg='#ecf0f1', fg='#2c3e50')
+            nome_label.pack(anchor='w')
+            
+            info_label = tk.Label(frame, text="Tesouros: 0 | Mortes: 0", font=('Arial', 8),
+                                 bg='#ecf0f1', fg='#34495e')
+            info_label.pack(anchor='w')
+            
+            self.stats_ml_labels[modelo] = info_label
+        
         # Frame do meio
         middle_frame = tk.Frame(main_frame, bg='#f0f0f0')
         middle_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Canvas do Ambiente
         ambiente_frame = tk.LabelFrame(middle_frame, text="Ambiente 10x10",
-                                      font=('Arial', 12, 'bold'), bg='white', padx=10, pady=10)
+                                      font=('Arial', 12, 'bold'), bg='white', padx=5, pady=5)
         ambiente_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
-        self.canvas = tk.Canvas(ambiente_frame, width=600, height=600, bg='white', highlightthickness=0)
+        # Canvas com tamanho ajustado (10 células x 45px = 450px + margem)
+        canvas_container = tk.Frame(ambiente_frame, bg='white')
+        canvas_container.pack(expand=True)
+        
+        self.canvas = tk.Canvas(canvas_container, width=450, height=450, bg='white', 
+                               highlightthickness=1, highlightbackground='#bdc3c7')
         self.canvas.pack()
         
         # Painel de Logs
@@ -306,19 +369,19 @@ class SistemaAgentesColaborativos:
                 celula = self.ambiente.matriz[i, j]
                 cor = cores_celulas.get(celula, 'white')
                 
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill=cor, outline='#bdc3c7', 
-                                            width=2, tags='grid')
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=cor, outline='#95a5a6', 
+                                            width=1, tags='grid')
                 
-                # Símbolos
+                # Símbolos (tamanho ajustado para 45px)
                 cx = x1 + self.tamanho_celula/2
                 cy = y1 + self.tamanho_celula/2
                 
                 if celula == 'B':
-                    self.canvas.create_text(cx, cy, text="💣", font=('Arial', 20), tags='grid')
+                    self.canvas.create_text(cx, cy, text="💣", font=('Arial', 14), tags='grid')
                 elif celula == 'T':
-                    self.canvas.create_text(cx, cy, text="💎", font=('Arial', 20), tags='grid')
+                    self.canvas.create_text(cx, cy, text="💎", font=('Arial', 14), tags='grid')
                 elif celula == 'F':
-                    self.canvas.create_text(cx, cy, text="🏁", font=('Arial', 20), tags='grid')
+                    self.canvas.create_text(cx, cy, text="🏁", font=('Arial', 14), tags='grid')
     
     def criar_agente_visual(self, agente):
         """Cria a representação visual de um agente no canvas"""
@@ -328,12 +391,13 @@ class SistemaAgentesColaborativos:
         # Adicionar posição inicial ao rastro
         agente.rastro.append((agente.x, agente.y))
         
-        # Criar círculo do agente (maior e com borda pulsante)
+        # Criar círculo do agente (ajustado para células de 45px)
+        raio = 13  # Raio do círculo do agente
         circulo = self.canvas.create_oval(
-            x-18, y-18, x+18, y+18, 
+            x-raio, y-raio, x+raio, y+raio, 
             fill=agente.cor, 
             outline='yellow', 
-            width=4,
+            width=2,
             tags=f'agente_{agente.id}'
         )
         
@@ -341,16 +405,16 @@ class SistemaAgentesColaborativos:
         texto = self.canvas.create_text(
             x, y, 
             text=str(agente.id), 
-            font=('Arial', 14, 'bold'), 
+            font=('Arial', 10, 'bold'), 
             fill='white',
             tags=f'agente_{agente.id}'
         )
         
-        # Criar indicador de modelo ML
+        # Criar indicador de modelo ML (menor e mais próximo)
         modelo_texto = self.canvas.create_text(
-            x, y + 28,
+            x, y + 20,
             text=agente.modelo_tipo.upper(),
-            font=('Arial', 7, 'bold'),
+            font=('Arial', 5, 'bold'),
             fill=agente.cor,
             tags=f'agente_{agente.id}'
         )
@@ -385,18 +449,18 @@ class SistemaAgentesColaborativos:
     
     def remover_agente_visual(self, agente):
         """Remove o agente do canvas quando morre"""
-        # Criar efeito de explosão
+        # Criar efeito de explosão (ajustado para 45px)
         x = agente.y * self.tamanho_celula + self.tamanho_celula/2
         y = agente.x * self.tamanho_celula + self.tamanho_celula/2
         
         # Estrela de explosão
         for i in range(8):
             angle = i * 45
-            dx = 20 * np.cos(np.radians(angle))
-            dy = 20 * np.sin(np.radians(angle))
-            self.canvas.create_line(x, y, x+dx, y+dy, fill='red', width=3, tags='explosao')
+            dx = 15 * np.cos(np.radians(angle))
+            dy = 15 * np.sin(np.radians(angle))
+            self.canvas.create_line(x, y, x+dx, y+dy, fill='red', width=2, tags='explosao')
         
-        self.canvas.create_text(x, y-30, text="💥", font=('Arial', 30), tags='explosao')
+        self.canvas.create_text(x, y-25, text="💥", font=('Arial', 24), tags='explosao')
         
         # Remover explosão após 500ms
         self.root.after(500, lambda: self.canvas.delete('explosao'))
@@ -451,89 +515,133 @@ class SistemaAgentesColaborativos:
             self.root.after(200, lambda: self.canvas.itemconfig(circulo, outline='yellow', width=4))
     
     def iniciar_simulacao(self):
-        if self.pausado:
-            # Retomar simulação pausada
-            self.pausado = False
+        try:
+            # DEBUG: Verificar se atributo existe
+            if not hasattr(self, 'estatisticas_modelos'):
+                self.adicionar_log("⚠️ CRIANDO estatisticas_modelos (não existia!)")
+                self.estatisticas_modelos = {
+                    'knn': {'tesouros': 0, 'mortes': 0, 'movimentos': 0, 'agentes': []},
+                    'tree': {'tesouros': 0, 'mortes': 0, 'movimentos': 0, 'agentes': []},
+                    'bayes': {'tesouros': 0, 'mortes': 0, 'movimentos': 0, 'agentes': []}
+                }
+            
+            if self.pausado:
+                # Retomar simulação pausada
+                self.pausado = False
+                self.executando = True
+                self.btn_iniciar.config(state=tk.DISABLED)
+                self.btn_pausar.config(state=tk.NORMAL, text="⏸ Pausar")
+                self.adicionar_log("▶️ Simulação retomada")
+                self.loop_simulacao()
+                return
+            
+            # Nova simulação
+            self.resetar_simulacao()
             self.executando = True
             self.btn_iniciar.config(state=tk.DISABLED)
-            self.btn_pausar.config(state=tk.NORMAL, text="⏸ Pausar")
-            self.adicionar_log("▶️ Simulação retomada")
-            self.loop_simulacao()
-            return
-        
-        # Nova simulação
-        self.resetar_simulacao()
-        self.executando = True
-        self.btn_iniciar.config(state=tk.DISABLED)
-        self.btn_pausar.config(state=tk.NORMAL)
-        self.agentes_scale.config(state=tk.DISABLED)
-        self.bombas_scale.config(state=tk.DISABLED)
-        
-        # Criar ambiente
-        self.ambiente = Ambiente(tamanho=10, perc_bombas=self.perc_bombas)
-        self.adicionar_log(f"🚀 Simulação iniciada - Abordagem {self.abordagem}")
-        
-        # Desenhar grid
-        self.desenhar_grid_ambiente()
-        
-        # Criar agentes
-        modelos = ['knn', 'tree', 'bayes']
-        self.agentes = []
-        for i in range(self.num_agentes):
-            x, y = np.random.randint(0, 10, 2)
-            while self.ambiente.matriz[x, y] == 'B':
+            self.btn_pausar.config(state=tk.NORMAL)
+            self.agentes_scale.config(state=tk.DISABLED)
+            self.bombas_scale.config(state=tk.DISABLED)
+            
+            # Criar ambiente
+            self.ambiente = Ambiente(tamanho=10, perc_bombas=self.perc_bombas)
+            self.adicionar_log(f"🚀 Simulação iniciada - Abordagem {self.abordagem}")
+            
+            # Treinar modelos ML
+            self.adicionar_log("🧠 Treinando modelos de Machine Learning...")
+            self.modelos_ml = {
+                'knn': ModeloML('knn'),
+                'tree': ModeloML('tree'),
+                'bayes': ModeloML('bayes')
+            }
+            self.adicionar_log("✅ Modelos KNN, Tree e Bayes treinados!")
+            
+            # Resetar estatísticas
+            for modelo in self.estatisticas_modelos:
+                self.estatisticas_modelos[modelo] = {'tesouros': 0, 'mortes': 0, 'movimentos': 0, 'agentes': []}
+            
+            # Desenhar grid
+            self.desenhar_grid_ambiente()
+            
+            # Criar agentes com modelos ML
+            modelos_tipos = ['knn', 'tree', 'bayes']
+            self.agentes = []
+            for i in range(self.num_agentes):
                 x, y = np.random.randint(0, 10, 2)
+                while self.ambiente.matriz[x, y] == 'B':
+                    x, y = np.random.randint(0, 10, 2)
+                
+                modelo_tipo = modelos_tipos[i % len(modelos_tipos)]
+                modelo_ml = self.modelos_ml[modelo_tipo]  # Passa o modelo treinado
+                
+                # CORRIGIDO: Criar agente com x, y separados (sem ambiente como parâmetro na classe interna)
+                agente = Agente(i, x, y, modelo_tipo, modelo_ml)
+                self.agentes.append(agente)
+                
+                # Registrar agente nas estatísticas
+                self.estatisticas_modelos[modelo_tipo]['agentes'].append(i)
+                
+                # Criar representação visual
+                self.criar_agente_visual(agente)
+                
+                self.adicionar_log(f"👤 Agente {i} criado ({modelo_tipo.upper()}) em ({x},{y})")
             
-            modelo_tipo = modelos[i % len(modelos)]
-            agente = Agente(i, x, y, modelo_tipo)
-            self.agentes.append(agente)
+            self.adicionar_log(f"💣 {self.perc_bombas}% de bombas")
+            self.adicionar_log(f"💎 {self.ambiente.tesouros_iniciais} tesouros disponíveis")
             
-            # Criar representação visual
-            self.criar_agente_visual(agente)
+            self.tempo_inicio = time.time()
             
-            self.adicionar_log(f"👤 Agente {i} criado ({modelo_tipo.upper()}) em ({x},{y})")
-        
-        self.adicionar_log(f"💣 {self.perc_bombas}% de bombas")
-        self.adicionar_log(f"💎 {self.ambiente.tesouros_iniciais} tesouros disponíveis")
-        
-        self.tempo_inicio = time.time()
-        
-        # Iniciar loop de simulação
-        self.loop_simulacao()
+            # Iniciar loop de simulação
+            self.loop_simulacao()
+            
+        except Exception as e:
+            self.adicionar_log(f"❌ ERRO ao iniciar simulação: {str(e)}")
+            import traceback
+            self.adicionar_log(f"Detalhes: {traceback.format_exc()}")
+            self.executando = False
+            self.btn_iniciar.config(state=tk.NORMAL)
+            self.btn_pausar.config(state=tk.DISABLED)
     
     def loop_simulacao(self):
         """Loop principal da simulação"""
-        if not self.executando or self.pausado:
-            return
-        
-        agentes_vivos = [ag for ag in self.agentes if ag.vivo]
-        
-        if not agentes_vivos:
+        try:
+            if not self.executando or self.pausado:
+                return
+            
+            agentes_vivos = [ag for ag in self.agentes if ag.vivo]
+            
+            if not agentes_vivos:
+                self.executando = False
+                self.adicionar_log("❌ Todos os agentes foram destruídos!")
+                self.finalizar_simulacao()
+                return
+            
+            # Mover cada agente vivo
+            for agente in agentes_vivos:
+                self.executar_movimento_agente(agente)
+            
+            # Atualizar ambiente visual
+            self.atualizar_ambiente_visual()
+            
+            # Atualizar métricas
+            self.atualizar_metricas()
+            
+            # Verificar condição de sucesso
+            if self.verificar_sucesso():
+                self.finalizar_simulacao()
+                return
+            
+            # Agendar próxima iteração
+            self.root.after(self.velocidade, self.loop_simulacao)
+            
+        except Exception as e:
+            self.adicionar_log(f"❌ ERRO no loop: {str(e)}")
+            import traceback
+            self.adicionar_log(f"Detalhes: {traceback.format_exc()}")
             self.executando = False
-            self.adicionar_log("❌ Todos os agentes foram destruídos!")
-            self.finalizar_simulacao()
-            return
-        
-        # Mover cada agente vivo
-        for agente in agentes_vivos:
-            self.executar_movimento_agente(agente)
-        
-        # Atualizar ambiente visual
-        self.atualizar_ambiente_visual()
-        
-        # Atualizar métricas
-        self.atualizar_metricas()
-        
-        # Verificar condição de sucesso
-        if self.verificar_sucesso():
-            self.finalizar_simulacao()
-            return
-        
-        # Agendar próxima iteração
-        self.root.after(self.velocidade, self.loop_simulacao)
     
     def executar_movimento_agente(self, agente):
-        """Executa um movimento de um agente"""
+        """Executa um movimento de um agente USANDO O MODELO ML"""
         movimentos = [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
         
         # Filtrar movimentos possíveis
@@ -547,9 +655,19 @@ class SistemaAgentesColaborativos:
         if not possiveis:
             return
         
-        # Escolher movimento
-        nx, ny = possiveis[np.random.randint(len(possiveis))]
+        # ========== USAR MODELO ML PARA ESCOLHER ========== #
+        if agente.modelo_ml:
+            nx, ny = agente.modelo_ml.escolher_melhor_celula(possiveis)
+        else:
+            # Fallback aleatório (não deveria acontecer)
+            nx, ny = possiveis[np.random.randint(len(possiveis))]
+        # ================================================== #
+        
         celula = self.ambiente.matriz[nx, ny]
+        
+        # Incrementar contador de movimentos do modelo
+        self.estatisticas_modelos[agente.modelo_tipo]['movimentos'] += 1
+        agente.movimentos += 1
         
         # Mover visualmente
         self.mover_agente_visual(agente, nx, ny)
@@ -562,41 +680,46 @@ class SistemaAgentesColaborativos:
         if celula == 'B':
             if agente.bombas_desativadas > 0:
                 agente.bombas_desativadas -= 1
-                self.adicionar_log(f"🛡️ Agente {agente.id} desativou bomba ({nx},{ny})")
+                self.adicionar_log(f"🛡️ Agente {agente.id} ({agente.modelo_tipo.upper()}) desativou bomba ({nx},{ny})")
                 self.ambiente.matriz[nx, ny] = 'E'
                 self.efeito_desativacao(nx, ny)
             else:
                 agente.vivo = False
-                self.adicionar_log(f"💥 Agente {agente.id} DESTRUÍDO em ({nx},{ny})")
+                self.estatisticas_modelos[agente.modelo_tipo]['mortes'] += 1
+                self.adicionar_log(f"💥 Agente {agente.id} ({agente.modelo_tipo.upper()}) DESTRUÍDO em ({nx},{ny})")
                 self.ambiente.matriz[nx, ny] = 'E'
                 self.remover_agente_visual(agente)
         
         elif celula == 'T':
             agente.tesouros += 1
             agente.bombas_desativadas += 1
-            self.adicionar_log(f"💎 Agente {agente.id} achou TESOURO ({nx},{ny}) [Total: {agente.tesouros}]")
+            self.estatisticas_modelos[agente.modelo_tipo]['tesouros'] += 1
+            self.adicionar_log(f"💎 Agente {agente.id} ({agente.modelo_tipo.upper()}) achou TESOURO ({nx},{ny}) [Total: {agente.tesouros}]")
             self.ambiente.matriz[nx, ny] = 'E'
             self.efeito_tesouro(nx, ny)
         
         elif celula == 'F':
-            self.adicionar_log(f"🏁 Agente {agente.id} achou BANDEIRA ({nx},{ny})!")
+            self.adicionar_log(f"🏁 Agente {agente.id} ({agente.modelo_tipo.upper()}) achou BANDEIRA ({nx},{ny})!")
             self.efeito_bandeira(nx, ny)
         
         elif celula == 'L':
             self.ambiente.matriz[nx, ny] = 'E'
+        
+        # Atualizar estatísticas ML
+        self.atualizar_estatisticas_ml()
     
     def efeito_tesouro(self, x, y):
         """Efeito visual ao coletar tesouro"""
         cx = y * self.tamanho_celula + self.tamanho_celula/2
         cy = x * self.tamanho_celula + self.tamanho_celula/2
         
-        # Estrelas brilhantes
-        for i in range(5):
+        # Estrelas brilhantes (ajustadas para células de 45px)
+        for i in range(4):
             self.canvas.create_text(
-                cx + np.random.randint(-15, 15),
-                cy + np.random.randint(-15, 15),
+                cx + np.random.randint(-10, 10),
+                cy + np.random.randint(-10, 10),
                 text="✨",
-                font=('Arial', 20),
+                font=('Arial', 12),
                 tags='efeito_tesouro'
             )
         
@@ -607,7 +730,7 @@ class SistemaAgentesColaborativos:
         cx = y * self.tamanho_celula + self.tamanho_celula/2
         cy = x * self.tamanho_celula + self.tamanho_celula/2
         
-        self.canvas.create_text(cx, cy, text="🛡️", font=('Arial', 30), tags='efeito_escudo')
+        self.canvas.create_text(cx, cy, text="🛡️", font=('Arial', 18), tags='efeito_escudo')
         self.root.after(300, lambda: self.canvas.delete('efeito_escudo'))
     
     def efeito_bandeira(self, x, y):
@@ -615,12 +738,12 @@ class SistemaAgentesColaborativos:
         cx = y * self.tamanho_celula + self.tamanho_celula/2
         cy = x * self.tamanho_celula + self.tamanho_celula/2
         
-        # Círculo pulsante
-        for r in range(10, 40, 10):
+        # Círculo pulsante (ajustado para 45px)
+        for r in range(6, 25, 6):
             circulo = self.canvas.create_oval(
                 cx-r, cy-r, cx+r, cy+r,
                 outline='purple',
-                width=3,
+                width=2,
                 tags='efeito_bandeira'
             )
         
@@ -681,6 +804,18 @@ class SistemaAgentesColaborativos:
         self.metric_labels['exploradas'].config(text=str(exploradas))
         self.metric_labels['tempo'].config(text=f"{tempo:.1f}")
     
+    def atualizar_estatisticas_ml(self):
+        """Atualiza as estatísticas de performance dos modelos ML"""
+        # Verificar se stats_ml_labels existe
+        if not hasattr(self, 'stats_ml_labels'):
+            return
+        
+        for modelo in ['knn', 'tree', 'bayes']:
+            stats = self.estatisticas_modelos[modelo]
+            texto = f"💎 Tesouros: {stats['tesouros']} | 💀 Mortes: {stats['mortes']}"
+            if modelo in self.stats_ml_labels:
+                self.stats_ml_labels[modelo].config(text=texto)
+    
     def pausar_simulacao(self):
         if self.executando:
             self.pausado = True
@@ -716,6 +851,26 @@ class SistemaAgentesColaborativos:
     def finalizar_simulacao(self):
         tempo_total = time.time() - self.tempo_inicio
         self.adicionar_log(f"🏁 Simulação FINALIZADA em {tempo_total:.2f}s")
+        
+        # Mostrar comparação final dos modelos
+        self.adicionar_log("\n📊 === COMPARAÇÃO DOS MODELOS ML ===")
+        melhor_modelo = None
+        melhor_score = -1000
+        
+        for modelo in ['knn', 'tree', 'bayes']:
+            stats = self.estatisticas_modelos[modelo]
+            # Score: tesouros valem +10, mortes valem -20
+            score = (stats['tesouros'] * 10) - (stats['mortes'] * 20)
+            taxa_sucesso = (stats['tesouros'] / max(stats['movimentos'], 1)) * 100
+            
+            self.adicionar_log(f"{modelo.upper()}: {stats['tesouros']} tesouros, {stats['mortes']} mortes, Score: {score}")
+            
+            if score > melhor_score:
+                melhor_score = score
+                melhor_modelo = modelo
+        
+        self.adicionar_log(f"🏆 MELHOR MODELO: {melhor_modelo.upper()} (Score: {melhor_score})")
+        
         self.btn_iniciar.config(state=tk.NORMAL)
         self.btn_pausar.config(state=tk.DISABLED)
         self.agentes_scale.config(state=tk.NORMAL)
